@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from android_in_the_wild import action_type as action_type_lib
+import action_type as action_type_lib
 
 
 _TAP_DISTANCE_THRESHOLD = 0.14  # Fraction of the screen

@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 
-from android_in_the_wild import action_type
+from actions import action_type
 
 
 _NUM_EXS_PER_ROW = 5
