@@ -58,3 +58,17 @@ class ActionType(enum.IntEnum):
   # resets the environment. This can be a result of many different things
   # including UI changes, Android version differences, etc.
   STATUS_TASK_IMPOSSIBLE = 11
+
+
+ACTION_SCHEMA = {
+    "open_app": ["app_name"],
+    "click": ["x", "y"],
+    "input_text": ["text"],
+    "scroll": ["direction"],
+    "wait": [],
+    "navigate_back": []
+}
+
+# 将字符串映射成 id（保证一致性）
+ACTION_TYPE_TO_ID = {k: i for i, k in enumerate(ACTION_SCHEMA.keys())}
+ID_TO_ACTION_TYPE = {v: k for k, v in ACTION_TYPE_TO_ID.items()}

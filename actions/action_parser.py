@@ -3,6 +3,8 @@
 import re
 import ast
 import math
+import json
+
 
 IMAGE_FACTOR = 28
 MIN_PIXELS = 100 * 28 * 28
@@ -143,137 +145,85 @@ def smart_resize(height: int,
     return h_bar, w_bar
 
 
-def parse_action_to_structure_output(text,
-                                     factor,
-                                     origin_resized_height,
-                                     origin_resized_width,
-                                     model_type="qwen25vl",
-                                     max_pixels=16384 * 28 * 28,
-                                     min_pixels=100 * 28 * 28):
+def parse_action_to_structure_output(text):
+    """
+    输入模型输出格式：
+        Thought: ...
+        Action: click(point="(120,300)")
+
+    输出结构：
+        {
+            "thought": "...",
+            "action_type": "click",
+            "action_inputs": {"x":120, "y":300},
+            "text": 原始文本
+        }
+    """
+
     text = text.strip()
+    text = text.replace("[EOS]", "")
 
-    if "<point>" in text:
-        text = convert_point_to_coordinates(text)
-    if "start_point=" in text:
-        text = text.replace("start_point=", "start_box=")
-    if "end_point=" in text:
-        text = text.replace("end_point=", "end_box=")
-    if "point=" in text:
-        text = text.replace("point=", "start_box=")
+    # -----------------------------
+    # 1) 提取 Thought
+    # -----------------------------
+    thought = None
+    m = re.search(r"Thought\s*:\s*(.+?)(?=Action:|$)", text, re.DOTALL)
+    if m:
+        thought = m.group(1).strip()
 
-    if model_type == "qwen25vl":
-        smart_resize_height, smart_resize_width = smart_resize(
-            origin_resized_height,
-            origin_resized_width,
-            factor=IMAGE_FACTOR,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels)
+    # -----------------------------
+    # 2) 提取 Action 字符串
+    # -----------------------------
+    if "Action:" not in text:
+        raise ValueError("No Action: found")
 
-    # 正则表达式匹配 Action 字符串
-    if text.startswith("Thought:"):
-        thought_pattern = r"Thought: (.+?)(?=\s*Action: |$)"
-        thought_hint = "Thought: "
-    elif text.startswith("Reflection:"):
-        thought_pattern = r"Reflection: (.+?)Action_Summary: (.+?)(?=\s*Action: |$)"
-        thought_hint = "Reflection: "
-    elif text.startswith("Action_Summary:"):
-        thought_pattern = r"Action_Summary: (.+?)(?=\s*Action: |$)"
-        thought_hint = "Action_Summary: "
-    else:
-        thought_pattern = r"Thought: (.+?)(?=\s*Action: |$)"
-        thought_hint = "Thought: "
-    reflection, thought = None, None
-    thought_match = re.search(thought_pattern, text, re.DOTALL)
-    if thought_match:
-        if len(thought_match.groups()) == 1:
-            thought = thought_match.group(1).strip()
-        elif len(thought_match.groups()) == 2:
-            thought = thought_match.group(2).strip()
-            reflection = thought_match.group(1).strip()
-    assert "Action:" in text
-    action_str = text.split("Action: ")[-1]
+    action_str = text.split("Action:", 1)[1].strip()
 
-    tmp_all_action = action_str.split(")\n\n")
-    all_action = []
-    for action_str in tmp_all_action:
-        if "type(content" in action_str:
-            if not action_str.strip().endswith(")"):
-                action_str = action_str.strip() + ")"
-            # 正则表达式匹配 content 中的字符串并转义单引号
-            def escape_quotes(match):
-                content = match.group(1)  # 获取 content 的值
-                return content
+    # 截断到第一个 ')'
+    if ")" in action_str:
+        action_str = action_str.split(")", 1)[0] + ")"
 
-            # 使用正则表达式进行替换
-            pattern = r"type\(content='(.*?)'\)"  # 匹配 type(content='...')
-            if re.search(pattern, action_str):  # 检查是否有匹配项
-                content = re.sub(pattern, escape_quotes, action_str)
-            else:
-                raise ValueError("Pattern not found in the input string.")
+    # -----------------------------
+    # 3) 使用 parse_action 解析
+    # -----------------------------
+    parsed = parse_action(action_str)
+    if parsed is None:
+        raise ValueError(f"Failed to parse: {action_str}")
 
-            # 处理字符串
-            action_str = escape_single_quotes(content)
-            action_str = "type(content='" + action_str + "')"
-        if not action_str.strip().endswith(")"):
-            action_str = action_str.strip() + ")"
-        all_action.append(action_str)
+    atype = parsed["function"]
+    params = parsed["args"]
 
-    parsed_actions = [
-        parse_action(action.replace("\n", "\\n").lstrip())
-        for action in all_action
-    ]
-    actions = []
-    for action_instance, raw_str in zip(parsed_actions, all_action):
-        if action_instance == None:
-            print(f"Action can't parse: {raw_str}")
-            raise ValueError(f"Action can't parse: {raw_str}")
-        action_type = action_instance["function"]
-        params = action_instance["args"]
+    # -----------------------------
+    # 4) 转换成 Android Control 所需结构
+    # -----------------------------
+    action_inputs = {}
 
-        # import pdb; pdb.set_trace()
-        action_inputs = {}
-        for param_name, param in params.items():
-            if param == "": continue
-            param = param.lstrip()  # 去掉引号和多余的空格
-            # 处理start_box或者end_box参数格式 '<bbox>x1 y1 x2 y2</bbox>'
-            action_inputs[param_name.strip()] = param
+    # point="(x,y)"
+    if "point" in params and params["point"]:
+        xy_str = params["point"].replace("(", "").replace(")", "")
+        x, y = map(float, xy_str.split(","))
+        action_inputs["x"] = x
+        action_inputs["y"] = y
 
-            if "start_box" in param_name or "end_box" in param_name:
-                ori_box = param
-                # Remove parentheses and split the string by commas
-                numbers = ori_box.replace("(", "").replace(")", "").split(",")
+    # 文本内容
+    if "content" in params:
+        action_inputs["content"] = params["content"]
 
-                # Convert to float and scale by 1000
-                # Qwen2.5vl output absolute coordinates, qwen2vl output relative coordinates
-                if model_type == "qwen25vl":
-                    float_numbers = []
-                    for num_idx, num in enumerate(numbers):
-                        num = float(num)
-                        if (num_idx + 1) % 2 == 0:
-                            float_numbers.append(
-                                float(num / smart_resize_height))
-                        else:
-                            float_numbers.append(
-                                float(num / smart_resize_width))
-                else:
-                    float_numbers = [float(num) / factor for num in numbers]
+    # scroll 参数
+    if "direction" in params:
+        action_inputs["direction"] = params["direction"]
 
-                if len(float_numbers) == 2:
-                    float_numbers = [
-                        float_numbers[0], float_numbers[1], float_numbers[0],
-                        float_numbers[1]
-                    ]
-                action_inputs[param_name.strip()] = str(float_numbers)
+    # open_app 参数
+    if "app_name" in params:
+        action_inputs["app_name"] = params["app_name"]
 
-        # import pdb; pdb.set_trace()
-        actions.append({
-            "reflection": reflection,
-            "thought": thought,
-            "action_type": action_type,
-            "action_inputs": action_inputs,
-            "text": text
-        })
-    return actions
+    return [{
+        "thought": thought,
+        "action_type": atype,
+        "action_inputs": action_inputs,
+        "text": text,
+    }]
+
 
 
 def parsing_response_to_pyautogui_code(responses,
@@ -524,3 +474,192 @@ def add_box_token(input_string):
     else:
         final_string = input_string
     return final_string
+
+
+def gt_action_parser(gt):
+    """
+    统一解析 Ground Truth，支持 JSON 字符串 或 dict。
+    
+    返回 canonical 结构：
+        - click / long_press: {"action_type": "click", "touch": (y,x), "lift": (y,x)}
+        - scroll: {"action_type": "scroll", "direction": ...}
+        - open_app: {"action_type": "open_app", "app_name": ...}
+        - input_text: {"action_type":"input_text","text":...}
+        - navigate_home / navigate_back / wait
+    """
+
+    # -------- ① 如果是字符串，先解析成 dict --------
+    if isinstance(gt, str):
+        try:
+            gt = json.loads(gt)
+        except Exception as e:
+            raise ValueError(f"Failed to parse GT JSON: {gt}") from e
+
+    if not isinstance(gt, dict):
+        raise ValueError(f"GT is not a dict: {gt}")
+
+    atype = gt.get("action_type")
+    if atype is None:
+        raise ValueError(f"No action_type in GT: {gt}")
+
+    # =============== CLICK / LONG PRESS ===============
+    if atype in ["click", "long_press"]:
+        x = float(gt["x"])
+        y = float(gt["y"])
+        return {
+            "action_type": atype,
+            "x": x,
+            "y": y,
+        }
+
+    # =============== SCROLL ===============
+    if atype == "scroll":
+        return {
+            "action_type": "scroll",
+            "direction": gt.get("direction", "down")
+        }
+
+    # =============== OPEN APP ===============
+    if atype == "open_app":
+        return {
+            "action_type": "open_app",
+            "app_name": gt.get("app_name", "")
+        }
+
+    # =============== TEXT INPUT ===============
+    if atype == "input_text":
+        return {
+            "action_type": "input_text",
+            "text": gt.get("text", "")
+        }
+
+    # =============== HOME / BACK ===============
+    if atype == "navigate_home":
+        return {"action_type": "navigate_home"}
+
+    if atype == "navigate_back":
+        return {"action_type": "navigate_back"}
+
+    # =============== WAIT ===============
+    if atype == "wait":
+        return {"action_type": "wait"}
+
+    raise ValueError(f"Unsupported GT action type: {atype}")
+
+
+def pred_action_parser(model_output):
+    """
+    Robust version.
+    """
+
+    text = (model_output or "").strip().replace("[EOS]", "")
+
+    if "Action:" not in text:
+        return {"action_type": "wait"}
+
+    act_str = text.split("Action:", 1)[1].strip()
+    act_str = act_str.split("\n", 1)[0].strip()
+
+    # ===== 自动容错修复 =====
+
+    # 补齐右括号
+    if act_str.count("(") > act_str.count(")"):
+        act_str += ")"
+
+    # 补齐双引号
+    if act_str.count("\"") % 2 == 1:
+        act_str += "\""
+
+    # 补齐单引号
+    if act_str.count("'") % 2 == 1:
+        act_str += "'"
+
+    # 修复 click(start_box='(635,759)
+    act_str = re.sub(
+        r"\((\d+),\s*(\d+)\)['\"]?$",
+        r"(\1,\2))",
+        act_str
+    )
+
+    # 修复 <point>300 500</point>
+    act_str = re.sub(
+        r"<point>(\d+)\s+(\d+)</point>",
+        lambda m: f"({m.group(1)},{m.group(2)})",
+        act_str
+    )
+
+    # 截到最后一个 ')'
+    if ")" in act_str:
+        act_str = act_str[:act_str.rfind(")") + 1]
+
+    # ===== 调 parse_action =====
+    try:
+        parsed = parse_action(act_str)
+    except Exception:
+        parsed = None
+
+    if parsed is None:
+        # 尝试仅解析坐标
+        coords = re.findall(r"\d+", act_str)
+        if len(coords) >= 2:
+            try:
+                x, y = map(float, coords[:2])
+                return {"action_type": "click", "x": x, "y": y}
+            except:
+                pass
+
+        return {"action_type": "wait"}
+
+    atype = parsed["function"]
+    args = parsed["args"]
+
+    # ===== CLICK / LONG PRESS =====
+    if atype in ["click", "long_press"]:
+        # 1) point="(x,y)"
+        if "point" in args and args["point"]:
+            xy = args["point"].replace("(", "").replace(")", "")
+            x, y = map(float, xy.split(","))
+            return {
+                "action_type": atype,
+                "x": x,
+                "y": y,
+            }
+
+        # 2) start_box 当成坐标中心点
+        if "start_box" in args and args["start_box"]:
+            xy = args["start_box"].replace("(", "").replace(")", "")
+            x, y = map(float, xy.split(","))
+            return {
+                "action_type": atype,
+                "x": x,
+                "y": y,
+            }
+    # ===== SCROLL =====
+    if atype == "scroll":
+        direction = args.get("direction", "").lower().strip()
+        if direction not in ["up", "down", "left", "right"]:
+            direction = "down"
+        return {"action_type": "scroll", "direction": direction}
+
+    # ===== OPEN APP =====
+    if atype == "open_app":
+        return {
+            "action_type": "open_app",
+            "app_name": args.get("app_name", "")
+        }
+
+    # ===== TEXT INPUT =====
+    if atype == "type":
+        return {
+            "action_type": "input_text",
+            "text": args.get("content", "")
+        }
+
+    # ===== SYSTEM KEYS =====
+    if atype == "press_home":
+        return {"action_type": "navigate_home"}
+
+    if atype == "press_back":
+        return {"action_type": "navigate_back"}
+
+    return {"action_type": "wait"}

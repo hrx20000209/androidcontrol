@@ -20,10 +20,11 @@ appied over a batch of data.
 """
 
 import jax
+import math
 import jax.numpy as jnp
 import numpy as np
 
-import action_type as action_type_lib
+import actions.action_type as action_type_lib
 
 
 _TAP_DISTANCE_THRESHOLD = 0.14  # Fraction of the screen
@@ -246,3 +247,75 @@ def check_actions_match(
           jnp.logical_or(taps_match, drags_match),
       ),
   )
+
+
+def match_actions(
+    gt: dict,
+    pred: dict,
+    screen_width: int = 1080,
+    screen_height: int = 2400,
+    tap_distance_fraction: float = _TAP_DISTANCE_THRESHOLD,
+):
+    """
+    比较 ground truth 与 prediction 两个动作。
+
+    返回:
+        type_correct: 只看动作类型和离散参数是否一致（不检查坐标）
+        fully_correct: 在 type_correct 的基础上，再检查坐标容差等条件
+    """
+    # 先看 action_type 是否一致
+    gt_type = gt.get("action_type")
+    pr_type = pred.get("action_type")
+    type_correct = (gt_type == pr_type)
+
+    # 如果类型都对不上，两个指标都 False
+    if not type_correct:
+        return False, False
+
+    # 从这里开始，类型是一致的，逐类处理 fully_correct
+
+    # 1) 纯类型类动作：home / back / wait
+    if gt_type in ["navigate_home", "navigate_back", "wait"]:
+        # 这几类没有额外参数，只要类型一致就算完全正确
+        return True, True
+
+    # 2) scroll（要比较 direction）
+    if gt_type == "scroll":
+        gt_dir = (gt.get("direction") or "").strip().lower()
+        pr_dir = (pred.get("direction") or "").strip().lower()
+        type_correct = (gt_type == pr_type)  # 已经 True
+        fully_correct = type_correct and (gt_dir == pr_dir)
+        return type_correct, fully_correct
+
+    # 3) open_app（可以比较 app_name，也可以只看类型）
+    if gt_type == "open_app":
+        gt_name = (gt.get("app_name") or "").strip().lower()
+        pr_name = (pred.get("app_name") or "").strip().lower()
+        # 如果你只想看类型，不要求名字完全一致，可以把 fully_correct 改成 True
+        fully_correct = (gt_name == pr_name)
+        return type_correct, fully_correct
+
+    # 4) input_text（一般评价只看类型，不看具体内容）
+    if gt_type == "input_text":
+        # 如果你想严格比较内容，可以改成:
+        # fully_correct = (gt.get("text","") == pred.get("text",""))
+        fully_correct = True
+        return type_correct, fully_correct
+
+    # 5) 坐标类动作：click / long_press
+    if gt_type in ["click", "long_press"]:
+        # 这里假设 parser 已经保证 x/y 都存在
+        gt_x = float(gt["x"])
+        gt_y = float(gt["y"])
+        pr_x = float(pred["x"])
+        pr_y = float(pred["y"])
+
+        # AITW 原始定义：0.14 * max(screen_width, screen_height)
+        tol = tap_distance_fraction * max(screen_width, screen_height)
+        dist = math.dist((gt_x, gt_y), (pr_x, pr_y))
+
+        fully_correct = (dist <= tol)
+        return type_correct, fully_correct
+
+    # 6) 其他未知类型，保守处理：类型一样就认为完全正确
+    return type_correct, True
