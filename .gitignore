@@ -1,6 +1,8 @@
-actions/__pycache__/
-agent/__pycache__/
-data/__pycache__/
+# Python cache
+**/__pycache__/
 
-models/*
-logs/*
+# Model checkpoints
+models/
+
+# Log files
+logs/
