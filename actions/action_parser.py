@@ -547,119 +547,127 @@ def gt_action_parser(gt):
     raise ValueError(f"Unsupported GT action type: {atype}")
 
 
+import re
+
 def pred_action_parser(model_output):
     """
-    Robust version.
+    Extremely robust parser for LLM GUI-agent outputs.
+    Handles malformed coordinates, malformed <point> tags,
+    and prevents scroll→click misclassification.
     """
 
     text = (model_output or "").strip().replace("[EOS]", "")
-
     if "Action:" not in text:
         return {"action_type": "wait"}
 
     act_str = text.split("Action:", 1)[1].strip()
     act_str = act_str.split("\n", 1)[0].strip()
 
-    # ===== 自动容错修复 =====
+    # ============================================================
+    # 1) Fix all <point> formats BEFORE calling parse_action
+    # ============================================================
 
-    # 补齐右括号
+    # <point>145 1</point>
+    act_str = re.sub(
+        r"<point>\s*([\d.]+)\s+([\d.]+)\s*</point>",
+        r"(\1,\2)",
+        act_str
+    )
+
+    # <point>145,1</point>
+    act_str = re.sub(
+        r"<point>\s*([\d.]+)\s*,\s*([\d.]+)\s*</point>",
+        r"(\1,\2)",
+        act_str
+    )
+
+    # point='<point>145 1</point>'
+    act_str = re.sub(
+        r"point=['\"]?<point>\s*([\d.]+)\s+([\d.]+)\s*</point>['\"]?",
+        r"point=(\1,\2)",
+        act_str
+    )
+
+    # point="<point>145,1</point>"
+    act_str = re.sub(
+        r"point=['\"]?<point>\s*([\d.]+)\s*,\s*([\d.]+)\s*</point>['\"]?",
+        r"point=(\1,\2)",
+        act_str
+    )
+
+    # ============================================================
+    # 2) Fix missing parentheses or quotes
+    # ============================================================
     if act_str.count("(") > act_str.count(")"):
         act_str += ")"
-
-    # 补齐双引号
     if act_str.count("\"") % 2 == 1:
         act_str += "\""
-
-    # 补齐单引号
     if act_str.count("'") % 2 == 1:
         act_str += "'"
 
-    # 修复 click(start_box='(635,759)
-    act_str = re.sub(
-        r"\((\d+),\s*(\d+)\)['\"]?$",
-        r"(\1,\2))",
-        act_str
-    )
-
-    # 修复 <point>300 500</point>
-    act_str = re.sub(
-        r"<point>(\d+)\s+(\d+)</point>",
-        lambda m: f"({m.group(1)},{m.group(2)})",
-        act_str
-    )
-
-    # 截到最后一个 ')'
-    if ")" in act_str:
-        act_str = act_str[:act_str.rfind(")") + 1]
-
-    # ===== 调 parse_action =====
+    # ============================================================
+    # 3) Try parse_action (the good path)
+    # ============================================================
     try:
         parsed = parse_action(act_str)
     except Exception:
         parsed = None
 
-    if parsed is None:
-        # 尝试仅解析坐标
-        coords = re.findall(r"\d+", act_str)
-        if len(coords) >= 2:
-            try:
-                x, y = map(float, coords[:2])
-                return {"action_type": "click", "x": x, "y": y}
-            except:
-                pass
+    if parsed is not None:
+        atype = parsed["function"]
+        args = parsed["args"]
 
-        return {"action_type": "wait"}
+        # CLICK / LONG_PRESS
+        if atype in ["click", "long_press"]:
+            point = args.get("point") or args.get("start_point") or args.get("start_box")
+            if point:
+                xy = re.sub(r"[()\"]", "", point).strip()
+                parts = re.split(r"[,\s]+", xy)
+                if len(parts) >= 2:
+                    x, y = float(parts[0]), float(parts[1])
+                    return {"action_type": atype, "x": x, "y": y}
 
-    atype = parsed["function"]
-    args = parsed["args"]
+        # SCROLL
+        if atype == "scroll":
+            direction = args.get("direction", "").lower().strip()
+            if direction not in ["up", "down", "left", "right"]:
+                direction = "down"
 
-    # ===== CLICK / LONG PRESS =====
-    if atype in ["click", "long_press"]:
-        # 1) point="(x,y)"
-        if "point" in args and args["point"]:
-            xy = args["point"].replace("(", "").replace(")", "")
-            x, y = map(float, xy.split(","))
+            # Ensure we do NOT rewrite scroll→click
             return {
-                "action_type": atype,
-                "x": x,
-                "y": y,
+                "action_type": "scroll",
+                "direction": direction
             }
 
-        # 2) start_box 当成坐标中心点
-        if "start_box" in args and args["start_box"]:
-            xy = args["start_box"].replace("(", "").replace(")", "")
-            x, y = map(float, xy.split(","))
+        # OPEN APP
+        if atype == "open_app":
             return {
-                "action_type": atype,
-                "x": x,
-                "y": y,
+                "action_type": "open_app",
+                "app_name": args.get("app_name", "")
             }
-    # ===== SCROLL =====
-    if atype == "scroll":
-        direction = args.get("direction", "").lower().strip()
-        if direction not in ["up", "down", "left", "right"]:
-            direction = "down"
-        return {"action_type": "scroll", "direction": direction}
 
-    # ===== OPEN APP =====
-    if atype == "open_app":
+        # TYPE
+        if atype == "type":
+            return {
+                "action_type": "input_text",
+                "text": args.get("content", "")
+            }
+
+        # NAV
+        if atype == "press_home":
+            return {"action_type": "navigate_home"}
+        if atype == "press_back":
+            return {"action_type": "navigate_back"}
+
+    # ============================================================
+    # 4) Final fallback — ONLY if no action type recognized
+    # ============================================================
+    nums = re.findall(r"[\d.]+", act_str)
+    if len(nums) >= 2:
         return {
-            "action_type": "open_app",
-            "app_name": args.get("app_name", "")
+            "action_type": "click",
+            "x": float(nums[0]),
+            "y": float(nums[1]),
         }
-
-    # ===== TEXT INPUT =====
-    if atype == "type":
-        return {
-            "action_type": "input_text",
-            "text": args.get("content", "")
-        }
-
-    # ===== SYSTEM KEYS =====
-    if atype == "press_home":
-        return {"action_type": "navigate_home"}
-
-    if atype == "press_back":
-        return {"action_type": "navigate_back"}
 
     return {"action_type": "wait"}

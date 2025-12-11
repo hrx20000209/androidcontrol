@@ -24,6 +24,7 @@ Action: ...
 click(point='<point>x1 y1</point>')
 long_press(point='<point>x1 y1</point>')
 type(content='') #If you want to submit your input, use "\\n" at the end of `content`.
+open_app(app_name=\'\')
 scroll(point='<point>x1 y1</point>', direction='down or up or right or left')
 drag(start_point='<point>x1 y1</point>', end_point='<point>x2 y2</point>')
 press_home()
@@ -36,6 +37,9 @@ finished(content='xxx') # Use escape characters \\', \\", and \\n in content par
 - The `Action` must strictly follow the action space format.
 - Choose the best next action to move toward the goal.
 
+## Task
+{task}
+
 ## User Instruction
 {instruction}
 """
@@ -46,7 +50,7 @@ class VLMAgent:
     Agent that uses vision-language model with screenshot images.
     """
     
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str, resolution_scale: int = 1):
         """
         Initialize VLMAgent with HuggingFace VLM.
         
@@ -54,6 +58,7 @@ class VLMAgent:
             model_name: Name of the HuggingFace VLM to use (e.g., "Qwen/Qwen2-VL-7B-Instruct")
         """
         self.model_name = model_name
+        self.resolution_scale = resolution_scale
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         print(f"Loading VLMAgent model: {model_name}")
@@ -67,49 +72,54 @@ class VLMAgent:
         self.model.eval()
         print(f"VLMAgent loaded on {self.device}")
     
-    def _build_prompt(self, task, history):
-        return PROMPT.format(history=history, instruction=task, language="English")
+    def _build_prompt(self, task, instruction, history):
+        return PROMPT.format(history=history, task=task, instruction=instruction, language="English")
     
-    def run_step(self, task, screenshot, history) -> str:
+    def _resize_image(self, img: Image.Image):
         """
-        Execute one step of the agent.
+        Resize image based on resolution_scale.
+        """
+        if self.resolution_scale == 1:
+            return img, 1
 
-        Args:
-            - task: Task description string
-            - screenshot: PIL Image
-            - history: List of previous actions taken
-                
-        Returns:
-            Raw model output string
+        w, h = img.size
+        scale = self.resolution_scale
+        resized = img.resize((w // scale, h // scale), Image.Resampling.LANCZOS)
+        return resized, scale
+
+    def run_step(self, task, instruction, screenshot, history):
         """
-        prompt = self._build_prompt(task, history)
-        
-        # Prepare messages with image
+        Return (model_response, scale)
+        scale = how much the coordinates should be multiplied after parsing
+        """
+        prompt = self._build_prompt(task, instruction, history)
+
+        # ===== Apply scaling here =====
+        resized_img, scale = self._resize_image(screenshot)
+
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": screenshot},
-                    {"type": "text", "text": prompt}
+                    {"type": "image", "image": resized_img},
+                    {"type": "text", "text": prompt},
                 ]
             }
         ]
-        
-        # Process inputs
+
         text = self.processor.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True
+            add_generation_prompt=True,
         )
-        
+
         inputs = self.processor(
             text=[text],
-            images=[screenshot],
+            images=[resized_img],
             return_tensors="pt",
             padding=True
         ).to(self.device)
-        
-        # Generate response
+
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
@@ -118,9 +128,9 @@ class VLMAgent:
                 temperature=0.0,
                 top_p=1.0,
             )
-        
-        # Decode only the generated tokens (excluding input)
+
         generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
         response = self.processor.decode(generated_ids, skip_special_tokens=True)
-        
+
+        # return scale so caller can restore coordinates
         return response
