@@ -1,5 +1,3 @@
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import json
 from torch.utils.data import DataLoader
 from data.android_control_dataset import AndroidControlEpisodeDataset
@@ -16,7 +14,7 @@ import traceback
 ##########################################################
 #  Episode Evaluation
 ##########################################################
-def evaluate_episode(agent, loader, log_f):
+def evaluate_episode(agent, loader):
     global_type_correct = 0
     global_full_correct = 0
     global_total_steps = 0
@@ -34,8 +32,6 @@ def evaluate_episode(agent, loader, log_f):
             break
 
         print(f"\n===== Episode {ep_id} =====")
-        log_f.write(f"\n===== Episode {ep_id} =====\n")
-        log_f.write(f"Steps in this episode: {num_steps}\n")
 
         for step_id in range(num_steps):
 
@@ -86,11 +82,6 @@ def evaluate_episode(agent, loader, log_f):
                 print(f"  Pred: {pred}")
                 print(f"  type_ok={type_ok}, full_ok={full_ok}")
 
-                log_f.write(f"\nStep {step_id}:\n")
-                log_f.write(f"  GT:   {gt}\n")
-                log_f.write(f"  Pred: {pred}\n")
-                log_f.write(f"  type_ok={type_ok}, full_ok={full_ok}\n")
-
             except Exception as e:
                 # ======================
                 # 捕获所有错误并继续执行
@@ -98,11 +89,9 @@ def evaluate_episode(agent, loader, log_f):
                 global_error_count += 1
 
                 print(f"\n[ERROR] Step {step_id} failed. Skipping this step.")
-                log_f.write(f"\n[ERROR] Step {step_id} failed. Skipping this step.\n")
 
                 # 打印堆栈（可注释掉）
                 traceback.print_exc()
-                log_f.write(traceback.format_exc() + "\n")
 
                 # 该 step 记为 wait 动作（防止 history 断裂）
                 history.append({"action_type": "wait"})
@@ -113,7 +102,6 @@ def evaluate_episode(agent, loader, log_f):
         # Episode-level cumulative accuracy
         # ======================================================
         print("\n--- Cumulative Per-Type Accuracy (up to this episode) ---")
-        log_f.write("\n--- Cumulative Per-Type Accuracy (up to this episode) ---\n")
 
         for t, d in global_per_type_stats.items():
             tot = d["total"]
@@ -126,7 +114,6 @@ def evaluate_episode(agent, loader, log_f):
             line = (f"{t}: type_acc={type_acc:.2f}% ({type_c}/{tot}), "
                     f"full_acc={full_acc:.2f}% ({full_c}/{tot})")
             print(line)
-            log_f.write(line + "\n")
 
         overall_type_acc = global_type_correct / global_total_steps * 100.0
         overall_full_acc = global_full_correct / global_total_steps * 100.0
@@ -136,22 +123,7 @@ def evaluate_episode(agent, loader, log_f):
         print(f"Cumulative Overall Full Accuracy: {overall_full_acc:.2f}% "
               f"({global_full_correct}/{global_total_steps})")
         print(f"Total Errors so far: {global_error_count}")
-
-        log_f.write(
-            f"\nCumulative Overall Type Accuracy: "
-            f"{overall_type_acc:.2f}% ({global_type_correct}/{global_total_steps})\n"
-        )
-        log_f.write(
-            f"Cumulative Overall Full Accuracy: "
-            f"{overall_full_acc:.2f}% ({global_full_correct}/{global_total_steps})\n"
-        )
-        log_f.write(
-            f"Total Errors so far: {global_error_count}\n"
-        )
-
         print("\n------------------------------------------\n")
-        log_f.write("\n------------------------------------------\n")
-        log_f.flush()
 
 
 
@@ -159,16 +131,12 @@ def evaluate_episode(agent, loader, log_f):
 # main
 ##########################################################
 def main():
-    dataset = AndroidControlEpisodeDataset("/data/rxhuang/android_control_episodes_flat")
+    dataset = AndroidControlEpisodeDataset("~/data/android_control")
     loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=lambda x: x[0])
 
-    log_f = open("./logs/vlm_agent_7B_1_2.log", "w", buffering=1)
-    agent = VLMAgent(model_name="./models/ui_tars_7B", resolution_scale=2)  # or LLMAgent(...)
+    agent = VLMAgent(model_name="~/projects/models/ui_tars_7B", resolution_scale=2)  # or LLMAgent(...)
 
-    evaluate_episode(agent, loader, log_f)
-
-    log_f.close()
-    print("\nSaved evaluation log → logs/android_control_agent_eval.log")
+    evaluate_episode(agent, loader)
 
 
 if __name__ == "__main__":
