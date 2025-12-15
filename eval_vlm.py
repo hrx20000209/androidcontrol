@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import json
 from torch.utils.data import DataLoader
 from data.android_control_dataset import AndroidControlEpisodeDataset
@@ -160,8 +160,8 @@ def main():
     dataset = AndroidControlEpisodeDataset("/data/rxhuang/android_control_episodes_flat")
     loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=lambda x: x[0])
 
-    log_f = open("./logs/vlm_agent_4.log", "w")
-    agent = VLMAgent(model_name="./models/ui_tars_2B", resolution_scale=4)  # or LLMAgent(...)
+    log_f = open("./logs/vlm_agent_7B_1_4.log", "w")
+    agent = VLMAgent(model_name="./models/ui_tars_7B", resolution_scale=4)  # or LLMAgent(...)
 
     evaluate_episode(agent, loader, log_f)
 

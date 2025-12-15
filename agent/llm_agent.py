@@ -13,6 +13,9 @@ You MUST NOT output <think>, Thought:, analysis, or any hidden reasoning.
 You must output ONLY one line:
 Action: ...
 
+## Action History:
+{history}
+
 ## Action Space
 click(point='<point>x1 y1</point>')
 long_press(point='<point>x1 y1</point>')
@@ -24,8 +27,8 @@ press_home()
 press_back()
 finished(content='xxx')
 
-## Action History:
-{history}
+## task
+{task}
 
 ## User Instruction
 {instruction}
@@ -33,8 +36,10 @@ finished(content='xxx')
 ## Current UI (XML):
 {xml}
 
-## Action History
-{history}
+## Note
+- DO NOT output Thought, explanation, or reasoning.
+- ONLY output a single Action line.
+- Any extra text will be treated as an error.
 
 """
 
@@ -112,7 +117,7 @@ class XMLAgent:
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=512,
+                max_new_tokens=128,
                 do_sample=True,              # 为了使用top_p
                 temperature=0.8,            # 近似0，不会报错
                 top_p=0.8,

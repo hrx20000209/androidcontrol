@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1"
 import json
 from torch.utils.data import DataLoader
 from data.android_control_dataset import AndroidControlEpisodeDataset
@@ -69,8 +69,6 @@ def evaluate_episode(agent, loader, log_f):
                 global_errors += 1
                 log_f.write(f"[ERROR][agent] {e}\n")
                 pred_raw = "Action: wait()"
-
-            print(pred_raw)
 
             try:
                 pred = pred_action_parser(pred_raw)
@@ -161,8 +159,8 @@ def main():
     dataset = AndroidControlEpisodeDataset("/data/rxhuang/android_control_episodes_flat")
     loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=lambda x: x[0])
 
-    log_f = open("./logs/llm_agent.log", "w")
-    agent = XMLAgent(model_name="./models/qwen3_1.7B")  # or LLMAgent(...)
+    log_f = open("./logs/llm_agent_8B_2.log", "w")
+    agent = XMLAgent(model_name="./models/qwen3_8B")  # or LLMAgent(...)
 
     evaluate_episode(agent, loader, log_f)
 
